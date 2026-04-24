@@ -1,0 +1,110 @@
+{
+  "name": "@escapace/fonttools",
+  "description": "Python wheels for fonttools and its common dependencies, built for Pyodide",
+  "version": "0.0.0",
+  "author": {
+    "name": "escapace",
+    "email": "opensource@escapace.com"
+  },
+  "bugs": "https://github.com/escapace/fonttools/issues",
+  "devDependencies": {
+    "@ast-grep/napi": "0.42.1",
+    "@commitlint/cli": "20.5.0",
+    "@commitlint/config-conventional": "20.5.0",
+    "@escapace/fonttools": "link:",
+    "@escapace/pnpm-pack": "0.8.0",
+    "@escapace/syncpack-configuration": "0.2.0",
+    "@ls-lint/ls-lint": "2.3.1",
+    "@types/node": "24.12.2",
+    "@types/semver": "7.7.1",
+    "@vitest/browser-playwright": "4.1.4",
+    "@vitest/coverage-v8": "4.1.4",
+    "eslint": "10.2.0",
+    "eslint-config-escapace": "5.16.1",
+    "esroll": "1.2.1",
+    "jsdom": "29.0.2",
+    "knip": "6.4.1",
+    "lefthook": "2.1.6",
+    "pip-requirements-js": "1.0.3",
+    "playwright": "1.59.1",
+    "prettier": "3.8.3",
+    "prettier-config-escapace": "1.2.2",
+    "semver": "7.7.4",
+    "smol-toml": "1.6.1",
+    "syncpack": "14.3.0",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.4"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "onFail": "warn",
+      "version": "^10.33.0"
+    },
+    "runtime": {
+      "name": "node",
+      "onFail": "warn",
+      "version": "^24.15.0"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "node": {
+        "import": {
+          "types": "./lib/types/index.d.ts",
+          "default": "./lib/node/index.js"
+        }
+      },
+      "browser": {
+        "import": {
+          "types": "./lib/types/index.d.ts",
+          "default": "./lib/browser/index.js"
+        }
+      },
+      "default": {
+        "import": {
+          "types": "./lib/types/index.d.ts",
+          "default": "./lib/node/index.js"
+        }
+      }
+    }
+  },
+  "files": [
+    "lib/browser",
+    "lib/node",
+    "lib/types"
+  ],
+  "homepage": "https://github.com/escapace/fonttools#readme",
+  "license": "MPL-2.0",
+  "peerDependencies": {
+    "pyodide": "0.29.3"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": "escapace/fonttools",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "container:export": "pnpm run container:export:before && bash scripts/vendor-pyodide-wheels.sh && pnpm run container:export:after",
+    "container:export:after": "tsx scripts/update-index.ts",
+    "container:export:before": "tsx scripts/container-codegen.ts",
+    "format": "syncpack format && eslint --no-warn-ignored --fix && prettier --no-error-on-unmatched-pattern -uw .",
+    "lint": "ls-lint --config .ls-lint.yaml && knip --no-config-hints && eslint",
+    "ls-lint": "ls-lint --config .ls-lint.yaml",
+    "pack": "pnpm-pack package --pack-destination lib",
+    "prepare": "lefthook install",
+    "syncpack": "syncpack fix && syncpack format",
+    "test": "vitest --no-watch --coverage",
+    "typecheck": "tsc --noEmit",
+    "update": "ncu --cooldown 7 -p pnpm -u --peer --dep dev,peer,prod,optional && pnpm run syncpack"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "./lib/types/index.d.ts"
+}

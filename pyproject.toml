@@ -1,0 +1,24 @@
+[project]
+name = "escapace-fonttools"
+version = "0.0.0"
+# https://github.com/fonttools/fonttools/blob/4.62.1/requirements.txt
+dependencies = [
+  "unicodedata2==17.0.0",
+  "Brotli==1.2.0",
+  "fonttools==4.62.1",
+  "lxml==6.0.2",
+  "uharfbuzz==0.52.0",
+]
+requires-python = "== 3.13.2"
+
+[tool]
+
+[tool.uv]
+managed = true
+prerelease = "allow"
+
+[tool.uv.workspace]
+members = []
+
+[tool.setuptools]
+py-modules = []

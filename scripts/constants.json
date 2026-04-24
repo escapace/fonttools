@@ -1,0 +1,38 @@
+{
+  "builds": {
+    "browser": {
+      "define": {
+        "__ENVIRONMENT__": "\"production\"",
+        "__PLATFORM__": "\"browser\""
+      },
+      "entryPoints": ["src/index.ts"],
+      "loader": {
+        ".whl": "file"
+      },
+      "mainFields": ["module", "browser", "main"],
+      "outdir": "lib/browser",
+      "platform": "browser",
+      "target": ["chrome118", "firefox119", "edge118", "opera126", "safari17"]
+    },
+    "node": {
+      "define": {
+        "__ENVIRONMENT__": "\"production\"",
+        "__PLATFORM__": "\"node\""
+      },
+      "entryPoints": ["src/index.ts"],
+      "loader": {
+        ".whl": "file"
+      },
+      "mainFields": ["module", "main"],
+      "outdir": "lib/node",
+      "platform": "node",
+      "target": ["node24.15.0"]
+    }
+  },
+  "declaration": {
+    "declarationRollup": true,
+    "documentation": true,
+    "entryPoints": ["src/index.ts"],
+    "tsconfig": "tsconfig-build.json"
+  }
+}
