@@ -89,8 +89,8 @@
   },
   "repository": "escapace/fonttools",
   "scripts": {
-    "build": "pnpm run codegen && tsx scripts/build.ts",
-    "codegen": "tsx scripts/codegen.ts",
+    "build": "tsx scripts/build.ts",
+    "container:codegen": "tsx scripts/codegen.ts",
     "format": "syncpack format && eslint --no-warn-ignored --fix && prettier --no-error-on-unmatched-pattern -uw .",
     "lint": "ls-lint --config .ls-lint.yaml && knip --no-config-hints && eslint",
     "ls-lint": "ls-lint --config .ls-lint.yaml",

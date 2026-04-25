@@ -28,7 +28,7 @@ jobs:
       contents: read
       packages: read
       security-events: write
-    uses: escapace/workflows/.github/workflows/ci-typescript.yaml@trunk
+    uses: ./.github/workflows/ci-typescript.yaml
     with:
       enable-codeql: true
       enable-test: false

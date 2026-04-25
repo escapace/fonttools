@@ -1,0 +1,220 @@
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        default: package
+        required: false
+        type: string
+      codeql-languages:
+        default: javascript-typescript
+        required: false
+        type: string
+      container-dockerfile-name:
+        default: Dockerfile
+        required: false
+        type: string
+      container-image-name-prefix-prepend:
+        default: ''
+        required: false
+        type: string
+      container-image-name-prefix-strip:
+        default: ''
+        required: false
+        type: string
+      container-image-name-source:
+        default: package-name
+        required: false
+        type: string
+      container-required-package-name-prefix:
+        default: ''
+        required: false
+        type: string
+      container-required-script-name:
+        default: ''
+        required: false
+        type: string
+      enable-artifact-upload:
+        default: false
+        required: false
+        type: boolean
+      enable-codecov:
+        default: false
+        required: false
+        type: boolean
+      enable-codeql:
+        default: false
+        required: false
+        type: boolean
+      enable-github-packages-npm-registry:
+        default: false
+        required: false
+        type: boolean
+      enable-github-pages:
+        default: false
+        required: false
+        type: boolean
+      enable-test:
+        default: true
+        required: false
+        type: boolean
+      github-pages-artifact-name:
+        default: github-pages
+        required: false
+        type: string
+      github-pages-path:
+        default: ./lib/github-pages
+        required: false
+        type: string
+      node-version:
+        required: true
+        type: string
+      pnpm-version:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+    secrets:
+      CODECOV_TOKEN:
+
+# Mixed-mode policy decision: do not split this workflow.
+# Rationale: the same build/test graph is reused across modes.
+# Caller permissions are the security upper bound and must be explicit.
+#
+# Approved caller permission profiles:
+#
+# Profile A (standard CI callers):
+# permissions:
+#   contents: read
+#   packages: read
+#
+# Profile B (CodeQL callers):
+# permissions:
+#   actions: read
+#   contents: read
+#   packages: read
+#   security-events: write
+
+jobs:
+  continuous-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+      - id: discover-containers
+        name: discover containers
+        uses: ./.github/actions/discover-containers
+        with:
+          dockerfile-name: ${{ inputs.container-dockerfile-name }}
+          image-name-prefix-prepend: ${{ inputs.container-image-name-prefix-prepend }}
+          image-name-prefix-strip: ${{ inputs.container-image-name-prefix-strip }}
+          image-name-source: ${{ inputs.container-image-name-source }}
+          required-package-name-prefix: ${{ inputs.container-required-package-name-prefix }}
+          required-script-name: ${{ inputs.container-required-script-name }}
+          required-target: export
+      - name: setup node
+        uses: actions/setup-node@v6.3.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: inputs.enable-github-packages-npm-registry
+        name: write .npmrc
+        run: |
+          cat << EOF > "$HOME/.npmrc"
+            //npm.pkg.github.com/:_authToken=$GITHUB_TOKEN
+            @escapace:registry=https://npm.pkg.github.com
+          EOF
+      - name: install pnpm
+        uses: pnpm/action-setup@v5.0.0
+        with:
+          run_install: false
+          version: ${{ inputs.pnpm-version }}
+      - id: pnpm-store-path
+        name: get pnpm store directory
+        run: echo "value=$(pnpm store path)" >> $GITHUB_OUTPUT
+      - name: pnpm cache
+        uses: actions/cache@v5
+        with:
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          path: ${{ steps.pnpm-store-path.outputs.value }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store
+      - if: ${{ hashFiles('pyproject.toml') != '' && hashFiles('uv.lock') != '' }}
+        name: install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            **/pyproject.toml
+          enable-cache: true
+          ignore-nothing-to-cache: true
+          version: 'latest'
+      - if: ${{ hashFiles('pyproject.toml') != '' && hashFiles('uv.lock') != '' }}
+        name: install python dependencies
+        run: uv sync --locked
+      - name: install dependencies
+        run: pnpm install
+      - if: steps.discover-containers.outputs.has-containers == 'true'
+        name: container codegen
+        run: |
+          if jq -e '.scripts["container:codegen"] | type == "string" and length > 0' package.json >/dev/null; then
+            pnpm run container:codegen
+          fi
+        shell: bash
+      - if: steps.discover-containers.outputs.has-containers == 'true'
+        name: bake containers
+        uses: ./.github/actions/bake-containers
+        with:
+          containers: ${{ steps.discover-containers.outputs.containers }}
+          export-directory: .
+      - name: build
+        run: pnpm run build
+      - name: typecheck
+        run: pnpm run typecheck
+      - if: inputs.enable-test
+        name: test
+        run: pnpm run test
+      - if: inputs.enable-codeql
+        name: codeql init
+        uses: github/codeql-action/init@v4.35.2
+        with:
+          build-mode: none
+          languages: ${{ inputs.codeql-languages }}
+      - if: inputs.enable-codeql
+        name: codeql analysis
+        uses: github/codeql-action/analyze@v4.35.2
+      - if: inputs.enable-codecov && inputs.enable-test
+        name: code coverage
+        uses: codecov/codecov-action@v6.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - if: inputs.enable-artifact-upload
+        name: pnpm pack
+        run: pnpm run pack --version ${{ inputs.version }}
+      - if: inputs.enable-artifact-upload
+        name: upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            **/lib/*.tgz
+            !**/node_modules/**
+          retention-days: 1
+      - if: inputs.enable-github-pages
+        name: build github-pages
+        run: pnpm run build:github-pages --base "/${GITHUB_REPOSITORY#*/}/"
+      - if: inputs.enable-github-pages
+        name: upload github-pages
+        uses: actions/upload-pages-artifact@v4
+        with:
+          name: ${{ inputs.github-pages-artifact-name }}
+          path: ${{ inputs.github-pages-path }}
+          retention-days: 1

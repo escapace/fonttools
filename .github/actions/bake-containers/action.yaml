@@ -1,0 +1,509 @@
+name: bake containers
+
+description: build discovered containers with docker bake into local output directories
+
+inputs:
+  build-args:
+    default: ''
+    description: Multiline Docker build arguments in KEY=VALUE form applied to every baked container
+    required: false
+  cache-ignore-error:
+    default: 'false'
+    description: Whether Bake gha layer-cache export errors should be ignored.
+    required: false
+  cache-key:
+    default: ''
+    description: Optional additional partition key for persisted mount caches. Use this to separate RUN --mount=type=cache state across workflow contexts that should not share it.
+    required: false
+  cache-mode:
+    default: max
+    description: Bake gha layer-cache export mode when cache-scope is enabled (min or max).
+    required: false
+  cache-scope:
+    default: buildkit
+    description: Writable cache scope prefix used to derive per-target Bake gha cache scopes and mount-cache compatibility lineage. When empty, Bake gha cache is disabled.
+    required: false
+  containers:
+    description: JSON array from discover-containers
+    required: true
+  export-directory:
+    default: ''
+    description: Optional workspace-relative directory to receive copied exported build results. Use '.' for the workspace root. When empty, no export copy is performed.
+    required: false
+  platforms:
+    default: ''
+    description: Optional comma- or newline-delimited list of supported platforms (linux/amd64, linux/arm64). Defaults to the native runner platform.
+    required: false
+
+outputs:
+  bake-file:
+    description: Generated Bake JSON definition path
+    value: ${{ steps.plan.outputs.bake-file }}
+  containers:
+    description: JSON array of planned baked containers including output directories
+    value: ${{ steps.plan.outputs.containers }}
+  count:
+    description: Number of baked container targets
+    value: ${{ steps.plan.outputs.count }}
+  has-containers:
+    description: Whether any container targets were baked
+    value: ${{ steps.plan.outputs.has-containers }}
+  metadata:
+    description: docker/bake-action metadata JSON
+    value: ${{ steps.bake.outputs.metadata }}
+  output-root:
+    description: Absolute temporary root directory used for Buildx local exports when exports are enabled; otherwise empty.
+    value: ${{ steps.plan.outputs.output-root }}
+  platforms:
+    description: JSON array of normalized target platforms
+    value: ${{ steps.plan.outputs.platforms }}
+  qemu-platforms:
+    description: Comma-delimited non-native architectures to install in QEMU
+    value: ${{ steps.plan.outputs.qemu-platforms }}
+
+runs:
+  steps:
+    - env:
+        GITHUB_TOKEN: ${{ github.token }}
+      id: plan
+      name: plan baked container build
+      uses: actions/github-script@v9
+      with:
+        script: |
+          const fs = require('node:fs')
+          const os = require('node:os')
+          const path = require('node:path')
+
+          const containers = JSON.parse(core.getInput('containers', { required: true }))
+
+          if (!Array.isArray(containers)) {
+            throw new Error('Expected containers input to be a JSON array.')
+          }
+
+          const workspace = process.env.GITHUB_WORKSPACE
+
+          if (typeof workspace !== 'string' || workspace.length === 0) {
+            throw new Error('Expected GITHUB_WORKSPACE to be set.')
+          }
+
+          const exportDirectoryInput = core.getInput('export-directory').trim()
+          const exportDirectory = (() => {
+            if (exportDirectoryInput.length === 0) {
+              return ''
+            }
+
+            if (path.isAbsolute(exportDirectoryInput)) {
+              throw new Error(`Expected export-directory to be workspace-relative, received absolute path: ${exportDirectoryInput}`)
+            }
+
+            const resolvedExportDirectory = path.resolve(workspace, exportDirectoryInput)
+            const relativeExportDirectory = path.relative(workspace, resolvedExportDirectory)
+
+            if (relativeExportDirectory.startsWith('..') || path.isAbsolute(relativeExportDirectory)) {
+              throw new Error(`Expected export-directory to stay within the workspace root: ${exportDirectoryInput}`)
+            }
+
+            return resolvedExportDirectory
+          })()
+          const cacheScope = core.getInput('cache-scope').trim()
+          const cacheMode = core.getInput('cache-mode').trim()
+          const cacheIgnoreError = core.getBooleanInput('cache-ignore-error')
+          const githubToken = process.env.GITHUB_TOKEN ?? ''
+          const architectureByProcessArch = {
+            arm64: 'arm64',
+            x64: 'amd64',
+          }
+          const supportedPlatforms = new Set(['linux/amd64', 'linux/arm64'])
+          const requestedPlatforms = core
+            .getMultilineInput('platforms')
+            .flatMap((platform) => platform.split(','))
+            .map((platform) => platform.trim())
+            .filter((platform, index, all) => platform.length > 0 && all.indexOf(platform) === index)
+
+          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
+          const nativeArchitecture = architectureByProcessArch[process.arch]
+
+          if (cacheMode !== 'min' && cacheMode !== 'max') {
+            throw new Error(`Expected cache-mode to be min or max, received: ${cacheMode}`)
+          }
+
+          if (typeof nativeArchitecture !== 'string') {
+            throw new Error(`Unsupported runner architecture for bake containers: ${process.arch}`)
+          }
+
+          const nativePlatform = `linux/${nativeArchitecture}`
+          const platforms = requestedPlatforms.length > 0 ? requestedPlatforms : [nativePlatform]
+
+          for (const platform of platforms) {
+            if (supportedPlatforms.has(platform) === false) {
+              throw new Error(`Unsupported platform: ${platform}`)
+            }
+          }
+
+          const qemuPlatforms = platforms
+            .map((platform) => platform.split('/')[1])
+            .filter((architecture, index, all) => architecture !== nativeArchitecture && all.indexOf(architecture) === index)
+
+          const buildArgs = {}
+          for (const line of buildArgLines) {
+            const separatorIndex = line.indexOf('=')
+            if (separatorIndex <= 0) {
+              throw new Error(`Expected build-args lines in KEY=VALUE form, received: ${line}`)
+            }
+
+            const key = line.slice(0, separatorIndex).trim()
+            const value = line.slice(separatorIndex + 1)
+
+            if (key.length === 0) {
+              throw new Error(`Expected a non-empty build argument key in line: ${line}`)
+            }
+
+            buildArgs[key] = value
+          }
+
+          const deriveBakeGhaCacheScope = (scopePrefix, container) => {
+            const targetName = typeof container.target === 'string' ? container.target : 'dockerfile-default'
+
+            return `${scopePrefix}--${container.id}--${targetName}`
+          }
+          const validatedContainers = containers.map((container, index) => {
+            if (container === null || typeof container !== 'object' || Array.isArray(container)) {
+              throw new Error(`Expected containers[${index}] to be a JSON object.`)
+            }
+
+            for (const key of ['context', 'dockerfile', 'id', 'name', 'package-directory', 'package-name']) {
+              if (typeof container[key] !== 'string' || container[key].length === 0) {
+                throw new Error(`Expected containers[${index}].${key} to be a non-empty string.`)
+              }
+            }
+
+            if (!Array.isArray(container.stages) || container.stages.some((stage) => typeof stage !== 'string')) {
+              throw new Error(`Expected containers[${index}].stages to be an array of strings.`)
+            }
+
+            if (
+              'target' in container &&
+              container.target !== undefined &&
+              (typeof container.target !== 'string' || container.target.length === 0)
+            ) {
+              throw new Error(`Expected containers[${index}].target to be undefined or a non-empty string.`)
+            }
+
+            if (typeof container.target === 'string' && container.stages.includes(container.target) === false) {
+              throw new Error(`Expected containers[${index}].stages to include target ${container.target}.`)
+            }
+
+            return container
+          })
+          const hasExportTargets = validatedContainers.some((container) => container.target === 'export')
+          const exportsEnabled = exportDirectory.length > 0 && hasExportTargets
+          const outputRoot = exportsEnabled
+            ? fs.mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), 'bake-containers-output-'))
+            : ''
+          const plannedContainers = validatedContainers.map((container) => ({
+            ...container,
+            'output-directory': exportsEnabled ? path.join(outputRoot, container['package-directory']) : '',
+          }))
+
+          const bakeDefinition = {
+            group: {
+              default: {
+                targets: plannedContainers.map((container) => container.id),
+              },
+            },
+            target: Object.fromEntries(
+              plannedContainers.map((container) => {
+                const bakeGhaCacheEnabled = cacheScope.length > 0
+                const ghaCacheScopeName = bakeGhaCacheEnabled ? deriveBakeGhaCacheScope(cacheScope, container) : undefined
+                const ghaCacheEntry = bakeGhaCacheEnabled
+                  ? {
+                      type: 'gha',
+                      scope: ghaCacheScopeName,
+                      mode: cacheMode,
+                      ...(cacheIgnoreError ? { 'ignore-error': true } : {}),
+                      ...(githubToken.length > 0
+                        ? {
+                            ghtoken: githubToken,
+                            repository: process.env.GITHUB_REPOSITORY,
+                          }
+                        : {}),
+                    }
+                  : undefined
+
+                return [
+                  container.id,
+                  {
+                    ...(Object.keys(buildArgs).length > 0 ? { args: buildArgs } : {}),
+                    ...(ghaCacheScopeName === undefined ? {} : { 'cache-from': [{ scope: ghaCacheScopeName, type: 'gha' }] }),
+                    ...(ghaCacheEntry === undefined ? {} : { 'cache-to': [ghaCacheEntry] }),
+                    context: container.context,
+                    dockerfile: container.dockerfile,
+                    ...(exportsEnabled && container.target === 'export'
+                      ? { output: [{ dest: container['output-directory'], type: 'local' }] }
+                      : {}),
+                    platforms,
+                    ...(typeof container.target === 'string' ? { target: container.target } : {}),
+                  },
+                ]
+              }),
+            ),
+          }
+          const tempDirectory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), 'bake-containers-'))
+          const bakeFile = path.join(tempDirectory, 'docker-bake.json')
+          const planFile = path.join(tempDirectory, 'containers.json')
+
+          if (exportsEnabled) {
+            fs.mkdirSync(outputRoot, { recursive: true })
+          }
+          fs.writeFileSync(bakeFile, JSON.stringify(bakeDefinition, null, 2))
+          fs.writeFileSync(planFile, JSON.stringify(plannedContainers, null, 2))
+
+          core.setOutput('bake-file', bakeFile)
+          core.setOutput('containers', JSON.stringify(plannedContainers))
+          core.setOutput('count', String(plannedContainers.length))
+          core.setOutput('export-directory', exportDirectory)
+          core.setOutput('exports-enabled', exportsEnabled ? 'true' : 'false')
+          core.setOutput('has-containers', plannedContainers.length > 0 ? 'true' : 'false')
+          core.setOutput('output-root', outputRoot)
+          core.setOutput('plan-file', planFile)
+          core.setOutput('platforms', JSON.stringify(platforms))
+          core.setOutput('qemu-platforms', qemuPlatforms.join(','))
+
+    - if: steps.plan.outputs.has-containers == 'true' && steps.plan.outputs.qemu-platforms != ''
+      name: setup qemu
+      uses: docker/setup-qemu-action@v4
+      with:
+        platforms: ${{ steps.plan.outputs.qemu-platforms }}
+
+    - id: buildx
+      if: steps.plan.outputs.has-containers == 'true'
+      name: docker buildx
+      uses: docker/setup-buildx-action@v4
+
+    - if: steps.plan.outputs.has-containers == 'true'
+      name: install dockerfile-tools
+      uses: escapace/action-dockerfile-tools@v0.2.1
+
+    - env:
+        PLAN_FILE: ${{ steps.plan.outputs.plan-file }}
+        PLATFORMS: ${{ steps.plan.outputs.platforms }}
+      id: cache-plan
+      if: steps.plan.outputs.has-containers == 'true'
+      name: discover cache mounts and derive cache keys
+      uses: actions/github-script@v9
+      with:
+        script: |
+          const { createHash } = require('node:crypto')
+          const { execFileSync } = require('node:child_process')
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          const sha256 = (value) => createHash('sha256').update(value).digest('hex')
+          const sha256Json = (value) => sha256(JSON.stringify(value))
+          const architectureByProcessArch = {
+            arm64: 'arm64',
+            x64: 'amd64',
+          }
+          const parsePlatform = (platform) => {
+            const [os, architecture, variant = ''] = platform.split('/')
+
+            if (typeof os !== 'string' || os.length === 0 || typeof architecture !== 'string' || architecture.length === 0) {
+              throw new Error(`Expected platform to be in os/arch[/variant] form, received: ${platform}`)
+            }
+
+            return {
+              architecture,
+              os,
+              platform,
+              variant,
+            }
+          }
+          const parseCanonicalBuildArgs = (lines) => {
+            const buildArgs = new Map()
+
+            for (const line of lines) {
+              const separatorIndex = line.indexOf('=')
+
+              if (separatorIndex <= 0) {
+                throw new Error(`Expected build-args lines in KEY=VALUE form, received: ${line}`)
+              }
+
+              const key = line.slice(0, separatorIndex).trim()
+              const value = line.slice(separatorIndex + 1)
+
+              if (key.length === 0) {
+                throw new Error(`Expected a non-empty build argument key in line: ${line}`)
+              }
+
+              buildArgs.set(key, value)
+            }
+
+            return [...buildArgs.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+          }
+          const discoverNormalizedCacheMap = (dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms) => {
+            const mergedCacheMap = {}
+
+            for (const dockerfile of dockerfiles) {
+              for (const targetPlatform of targetPlatforms) {
+                const args = [
+                  'list-cache-mounts',
+                  '--dockerfile',
+                  dockerfile,
+                  ...dockerfileToolArgLines.flatMap((line) => ['--arg', line]),
+                  '--arg',
+                  `BUILDPLATFORM=${buildPlatform.platform}`,
+                  '--arg',
+                  `BUILDOS=${buildPlatform.os}`,
+                  '--arg',
+                  `BUILDARCH=${buildPlatform.architecture}`,
+                  '--arg',
+                  `BUILDVARIANT=${buildPlatform.variant}`,
+                  '--arg',
+                  `TARGETPLATFORM=${targetPlatform.platform}`,
+                  '--arg',
+                  `TARGETOS=${targetPlatform.os}`,
+                  '--arg',
+                  `TARGETARCH=${targetPlatform.architecture}`,
+                  '--arg',
+                  `TARGETVARIANT=${targetPlatform.variant}`,
+                ]
+                const cacheMap = JSON.parse(execFileSync('dockerfile-tools', args, { encoding: 'utf8' }))
+
+                if (cacheMap === null || typeof cacheMap !== 'object' || Array.isArray(cacheMap)) {
+                  throw new Error(`Expected dockerfile-tools list-cache-mounts to return a JSON object for ${dockerfile}`)
+                }
+
+                for (const [sourcePath, cacheOptions] of Object.entries(cacheMap)) {
+                  if (cacheOptions === null || typeof cacheOptions !== 'object' || Array.isArray(cacheOptions)) {
+                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to be a JSON object.`)
+                  }
+
+                  const { type: _type, ...normalizedCacheOptions } = cacheOptions
+
+                  if (typeof normalizedCacheOptions.target !== 'string' || normalizedCacheOptions.target.length === 0) {
+                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to include a target.`)
+                  }
+
+                  mergedCacheMap[sourcePath] = normalizedCacheOptions
+                }
+              }
+            }
+
+            return mergedCacheMap
+          }
+          const toCanonicalCompatibilityBindings = (cacheScope, mergedCacheMap) => ({
+            'cache-scope': cacheScope,
+            bindings: Object.entries(mergedCacheMap)
+              .map(([sourcePath, cacheOptions]) => {
+                if (typeof cacheOptions === 'string') {
+                  return {
+                    effectiveIdentity: cacheOptions,
+                    sourcePath,
+                  }
+                }
+
+                const effectiveIdentity = typeof cacheOptions.id === 'string' && cacheOptions.id.length > 0
+                  ? cacheOptions.id
+                  : cacheOptions.target
+
+                if (typeof effectiveIdentity !== 'string' || effectiveIdentity.length === 0) {
+                  throw new Error(`Expected cache mount ${sourcePath} to include an id or target.`)
+                }
+
+                return {
+                  effectiveIdentity,
+                  sourcePath,
+                }
+              })
+              .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath) || left.effectiveIdentity.localeCompare(right.effectiveIdentity)),
+          })
+          const toCanonicalTargetSelections = (containers) => containers
+            .map((container) => ({
+              id: container.id,
+              target: typeof container.target === 'string' ? container.target : 'dockerfile-default',
+            }))
+            .sort((left, right) => left.id.localeCompare(right.id) || left.target.localeCompare(right.target))
+
+          const planFile = process.env.PLAN_FILE
+          const platforms = JSON.parse(process.env.PLATFORMS)
+          const nativeArchitecture = architectureByProcessArch[process.arch]
+
+          if (typeof nativeArchitecture !== 'string') {
+            throw new Error(`Unsupported runner architecture for cache planning: ${process.arch}`)
+          }
+
+          const buildPlatform = parsePlatform(`linux/${nativeArchitecture}`)
+          const targetPlatforms = platforms.map(parsePlatform)
+          const containers = JSON.parse(fs.readFileSync(planFile, 'utf8'))
+          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
+          const cacheScope = core.getInput('cache-scope').trim()
+          const callerCacheKey = core.getInput('cache-key')
+          const dockerfiles = [...new Set(containers.map((container) => container.dockerfile))].sort()
+          const canonicalBuildArgs = parseCanonicalBuildArgs(buildArgLines)
+          const dockerfileToolArgLines = canonicalBuildArgs.map(([key, value]) => `${key}=${value}`)
+          const mergedCacheMap = discoverNormalizedCacheMap(dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms)
+          const canonicalCompatibilityBindings = toCanonicalCompatibilityBindings(cacheScope, mergedCacheMap)
+          const canonicalTargetSelections = toCanonicalTargetSelections(containers)
+          const dockerfileHashes = dockerfiles.map((dockerfile) => ({
+            contentHash: sha256(fs.readFileSync(path.resolve(dockerfile))),
+            path: dockerfile,
+          }))
+          const compatibilityHash = sha256Json(canonicalCompatibilityBindings)
+          const targetHash = sha256Json(canonicalTargetSelections)
+          const callerCacheKeyHash = sha256(callerCacheKey)
+          const freshnessHash = sha256Json({
+            buildArgs: canonicalBuildArgs,
+            dockerfiles: dockerfileHashes,
+          })
+          const cachePaths = Object.keys(mergedCacheMap).sort()
+
+          core.setOutput('caller-cache-key-hash', callerCacheKeyHash)
+          core.setOutput('cache-map', JSON.stringify(mergedCacheMap))
+          core.setOutput('cache-path', cachePaths.join('\n'))
+          core.setOutput('compatibility-hash', compatibilityHash)
+          core.setOutput('freshness-hash', freshnessHash)
+          core.setOutput('has-cache-paths', cachePaths.length > 0 ? 'true' : 'false')
+          core.setOutput('target-hash', targetHash)
+
+    - id: cache
+      if: steps.plan.outputs.has-containers == 'true' && steps.cache-plan.outputs.has-cache-paths == 'true'
+      name: restore mount cache
+      uses: actions/cache@v5
+      with:
+        key: cache-mounts-${{ steps.cache-plan.outputs.compatibility-hash }}-${{ steps.cache-plan.outputs.target-hash }}-${{ steps.cache-plan.outputs.caller-cache-key-hash }}-${{ steps.cache-plan.outputs.freshness-hash }}
+        path: |
+          ${{ steps.cache-plan.outputs.cache-path }}
+        restore-keys: |
+          cache-mounts-${{ steps.cache-plan.outputs.compatibility-hash }}-${{ steps.cache-plan.outputs.target-hash }}-${{ steps.cache-plan.outputs.caller-cache-key-hash }}-
+          cache-mounts-${{ steps.cache-plan.outputs.compatibility-hash }}-${{ steps.cache-plan.outputs.target-hash }}-
+          cache-mounts-${{ steps.cache-plan.outputs.compatibility-hash }}-
+
+    - if: steps.plan.outputs.has-containers == 'true' && steps.cache-plan.outputs.has-cache-paths == 'true'
+      name: inject cache into docker
+      uses: reproducible-containers/buildkit-cache-dance@4db69aec1c9d8c63a6412a678820f69d2c48569b
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        cache-map: ${{ steps.cache-plan.outputs.cache-map }}
+        skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+    - id: bake
+      if: steps.plan.outputs.has-containers == 'true'
+      name: bake containers
+      uses: docker/bake-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        files: ${{ steps.plan.outputs.bake-file }}
+        github-token: ${{ github.token }}
+        source: .
+
+    - env:
+        EXPORT_DIRECTORY: ${{ steps.plan.outputs.export-directory }}
+        OUTPUT_ROOT: ${{ steps.plan.outputs.output-root }}
+      if: steps.plan.outputs.has-containers == 'true' && steps.plan.outputs.exports-enabled == 'true'
+      name: copy exported build results
+      run: |
+        set -euo pipefail
+        mkdir -p "$EXPORT_DIRECTORY"
+        cp -a "$OUTPUT_ROOT"/. "$EXPORT_DIRECTORY"/
+      shell: bash
+  using: composite

@@ -39,7 +39,7 @@ jobs:
       packages: read
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-    uses: escapace/workflows/.github/workflows/ci-typescript.yaml@trunk
+    uses: ./.github/workflows/ci-typescript.yaml
     with:
       enable-codecov: ${{ !github.event.repository.private }}
       node-version: ${{ needs.context.outputs.node-version }}
