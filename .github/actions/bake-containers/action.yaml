@@ -317,6 +317,7 @@ runs:
           const { createHash } = require('node:crypto')
           const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
+          const os = require('node:os')
           const path = require('node:path')
 
           const sha256 = (value) => createHash('sha256').update(value).digest('hex')
@@ -362,8 +363,8 @@ runs:
 
             return [...buildArgs.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
           }
-          const discoverNormalizedCacheMap = (dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms) => {
-            const mergedCacheMap = {}
+          const discoverLogicalCacheMap = (dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms) => {
+            const logicalCacheMap = {}
 
             for (const dockerfile of dockerfiles) {
               for (const targetPlatform of targetPlatforms) {
@@ -395,32 +396,38 @@ runs:
                   throw new Error(`Expected dockerfile-tools list-cache-mounts to return a JSON object for ${dockerfile}`)
                 }
 
-                for (const [sourcePath, cacheOptions] of Object.entries(cacheMap)) {
+                for (const [logicalSourcePath, cacheOptions] of Object.entries(cacheMap)) {
                   if (cacheOptions === null || typeof cacheOptions !== 'object' || Array.isArray(cacheOptions)) {
-                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to be a JSON object.`)
+                    throw new Error(`Expected cache mount ${logicalSourcePath} from ${dockerfile} to be a JSON object.`)
                   }
 
                   const { type: _type, ...normalizedCacheOptions } = cacheOptions
 
                   if (typeof normalizedCacheOptions.target !== 'string' || normalizedCacheOptions.target.length === 0) {
-                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to include a target.`)
+                    throw new Error(`Expected cache mount ${logicalSourcePath} from ${dockerfile} to include a target.`)
                   }
 
-                  mergedCacheMap[sourcePath] = normalizedCacheOptions
+                  logicalCacheMap[logicalSourcePath] = normalizedCacheOptions
                 }
               }
             }
 
-            return mergedCacheMap
+            return logicalCacheMap
           }
-          const toCanonicalCompatibilityBindings = (cacheScope, mergedCacheMap) => ({
+          const toPhysicalCacheMap = (logicalCacheMap, cacheRoot) => Object.fromEntries(
+            Object.entries(logicalCacheMap).map(([logicalSourcePath, cacheOptions]) => [
+              path.join(cacheRoot, logicalSourcePath),
+              cacheOptions,
+            ]),
+          )
+          const toCanonicalCompatibilityBindings = (cacheScope, logicalCacheMap) => ({
             'cache-scope': cacheScope,
-            bindings: Object.entries(mergedCacheMap)
-              .map(([sourcePath, cacheOptions]) => {
+            bindings: Object.entries(logicalCacheMap)
+              .map(([logicalSourcePath, cacheOptions]) => {
                 if (typeof cacheOptions === 'string') {
                   return {
                     effectiveIdentity: cacheOptions,
-                    sourcePath,
+                    sourcePath: logicalSourcePath,
                   }
                 }
 
@@ -429,12 +436,12 @@ runs:
                   : cacheOptions.target
 
                 if (typeof effectiveIdentity !== 'string' || effectiveIdentity.length === 0) {
-                  throw new Error(`Expected cache mount ${sourcePath} to include an id or target.`)
+                  throw new Error(`Expected cache mount ${logicalSourcePath} to include an id or target.`)
                 }
 
                 return {
                   effectiveIdentity,
-                  sourcePath,
+                  sourcePath: logicalSourcePath,
                 }
               })
               .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath) || left.effectiveIdentity.localeCompare(right.effectiveIdentity)),
@@ -463,8 +470,8 @@ runs:
           const dockerfiles = [...new Set(containers.map((container) => container.dockerfile))].sort()
           const canonicalBuildArgs = parseCanonicalBuildArgs(buildArgLines)
           const dockerfileToolArgLines = canonicalBuildArgs.map(([key, value]) => `${key}=${value}`)
-          const mergedCacheMap = discoverNormalizedCacheMap(dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms)
-          const canonicalCompatibilityBindings = toCanonicalCompatibilityBindings(cacheScope, mergedCacheMap)
+          const logicalCacheMap = discoverLogicalCacheMap(dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms)
+          const canonicalCompatibilityBindings = toCanonicalCompatibilityBindings(cacheScope, logicalCacheMap)
           const canonicalTargetSelections = toCanonicalTargetSelections(containers)
           const dockerfileHashes = dockerfiles.map((dockerfile) => ({
             contentHash: sha256(fs.readFileSync(path.resolve(dockerfile))),
@@ -477,14 +484,31 @@ runs:
             buildArgs: canonicalBuildArgs,
             dockerfiles: dockerfileHashes,
           })
-          const cachePaths = Object.keys(mergedCacheMap).sort()
+          const runnerTempDirectory = process.env.RUNNER_TEMP ?? os.tmpdir()
+          const cacheRoot = path.join(
+            runnerTempDirectory,
+            'bake-containers-cache',
+            compatibilityHash,
+            targetHash,
+            callerCacheKeyHash,
+          )
+          const physicalCacheMap = toPhysicalCacheMap(logicalCacheMap, cacheRoot)
+          const cachePaths = Object.keys(physicalCacheMap).sort()
+          const scratchDirectory = path.join(
+            runnerTempDirectory,
+            'bake-containers-scratch',
+            compatibilityHash,
+            targetHash,
+            callerCacheKeyHash,
+          )
 
           core.setOutput('caller-cache-key-hash', callerCacheKeyHash)
-          core.setOutput('cache-map', JSON.stringify(mergedCacheMap))
+          core.setOutput('cache-map', JSON.stringify(physicalCacheMap))
           core.setOutput('cache-path', cachePaths.join('\n'))
           core.setOutput('compatibility-hash', compatibilityHash)
           core.setOutput('freshness-hash', freshnessHash)
           core.setOutput('has-cache-paths', cachePaths.length > 0 ? 'true' : 'false')
+          core.setOutput('scratch-dir', scratchDirectory)
           core.setOutput('target-hash', targetHash)
 
     - id: cache
@@ -506,6 +530,7 @@ runs:
       with:
         builder: ${{ steps.buildx.outputs.name }}
         cache-map: ${{ steps.cache-plan.outputs.cache-map }}
+        scratch-dir: ${{ steps.cache-plan.outputs.scratch-dir }}
         skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
     - id: bake
