@@ -31,5 +31,5 @@
     "verbatimModuleSyntax": true
   },
   "exclude": ["lib", "src/vendor"],
-  "include": ["*.ts", "scripts", "src"]
+  "include": ["*.ts", "scripts", "src", "test"]
 }

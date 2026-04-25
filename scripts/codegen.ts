@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import {
   parsePipRequirementsFile,
   VersionOperator,
@@ -71,8 +69,6 @@ interface Versions {
 }
 
 type DependencyName = 'brotli' | 'fonttools' | 'lxml' | 'uharfbuzz' | 'unicodedata2'
-
-const execFileAsync = promisify(execFile)
 
 const ROOT_DIRECTORY = path.resolve(import.meta.dirname, '..')
 const DOCKERFILE_PATH = path.join(ROOT_DIRECTORY, 'Dockerfile')
@@ -198,12 +194,6 @@ json.dumps({
   }
 }
 
-async function runUvLock(): Promise<void> {
-  await execFileAsync('uv', ['lock', '--no-progress'], {
-    cwd: ROOT_DIRECTORY,
-  })
-}
-
 async function readUnicodeData2SourceDistribution(): Promise<SourceDistribution> {
   const uvLock = parseToml(await readFile(UV_LOCK_PATH, 'utf8')) as UvLock
   const packageEntry = uvLock.package?.find((candidate) => candidate.name === 'unicodedata2')
@@ -283,8 +273,6 @@ async function main(): Promise<void> {
     await readFile(PYODIDE_PACKAGE_JSON_PATH, 'utf8'),
   ) as PyodidePackageJson
   const versions = await getVersions(packageJson, pyodidePackageJson)
-
-  await runUvLock()
 
   const unicodedata2Source = await readUnicodeData2SourceDistribution()
   await updateDockerfile(versions, unicodedata2Source)

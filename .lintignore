@@ -1,4 +1,4 @@
-src/vendor/**
 coverage
 lib
 pnpm-lock.yaml
+src/vendor/**

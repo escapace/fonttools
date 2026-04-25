@@ -1,22 +1,27 @@
 {
-  extends: ['github>escapace/renovate-configuration'],
-
-  // `enabledManagers` is not mergeable, so include the inherited npm manager.
-  // uv project support is handled by Renovate's `pep621` manager when `uv.lock`
-  // is present.
-  enabledManagers: ['npm', 'pep621'],
-
+  enabledManagers: [
+    'npm',
+    'pep621',
+  ],
+  extends: [
+    'github>escapace/renovate-configuration',
+  ],
   packageRules: [
-    // Only update the two Python package pins we currently treat as managed
-    // source-of-truth entries in pyproject.toml.
     {
       enabled: false,
-      matchManagers: ['pep621'],
+      matchManagers: [
+        'pep621',
+      ],
     },
     {
       enabled: true,
-      matchManagers: ['pep621'],
-      matchPackageNames: ['fonttools', 'unicodedata2'],
+      matchManagers: [
+        'pep621',
+      ],
+      matchPackageNames: [
+        'fonttools',
+        'unicodedata2',
+      ],
       rangeStrategy: 'pin',
     },
   ],

@@ -6,6 +6,9 @@
         "__PLATFORM__": "\"browser\""
       },
       "entryPoints": ["src/index.ts"],
+      "loader": {
+        ".whl": "file"
+      },
       "mainFields": ["module", "browser", "main"],
       "outdir": "lib/browser",
       "platform": "browser",
@@ -17,6 +20,9 @@
         "__PLATFORM__": "\"node\""
       },
       "entryPoints": ["src/index.ts"],
+      "loader": {
+        ".whl": "file"
+      },
       "mainFields": ["module", "main"],
       "outdir": "lib/node",
       "platform": "node",

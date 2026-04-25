@@ -175,6 +175,9 @@ export default mergeConfig(
       __VERSION__: JSON.stringify(version),
       __VITEST_PROJECT__: JSON.stringify('browser'),
     },
+    optimizeDeps: {
+      exclude: ['pyodide'],
+    },
     test: {
       include:
         browserProvider === undefined

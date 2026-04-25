@@ -6,8 +6,8 @@ export default defineConfig({
       exclude: [
         '**/example*.ts',
         'src/test-support/**',
-        'src/vendor/**',
         ...(configDefaults.coverage.exclude ?? []),
+        'src/vendor/**',
       ],
       include: ['src/**'],
       provider: 'v8',
