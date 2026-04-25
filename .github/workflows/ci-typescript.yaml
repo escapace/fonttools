@@ -213,7 +213,7 @@ jobs:
         run: pnpm run build:github-pages --base "/${GITHUB_REPOSITORY#*/}/"
       - if: inputs.enable-github-pages
         name: upload github-pages
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           name: ${{ inputs.github-pages-artifact-name }}
           path: ${{ inputs.github-pages-path }}
