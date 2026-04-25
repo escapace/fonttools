@@ -21,10 +21,6 @@ on:
         default: ''
         required: false
         type: string
-      container-image-name-source:
-        default: package-name
-        required: false
-        type: string
       container-required-package-name-prefix:
         default: ''
         required: false
@@ -114,7 +110,6 @@ jobs:
           dockerfile-name: ${{ inputs.container-dockerfile-name }}
           image-name-prefix-prepend: ${{ inputs.container-image-name-prefix-prepend }}
           image-name-prefix-strip: ${{ inputs.container-image-name-prefix-strip }}
-          image-name-source: ${{ inputs.container-image-name-source }}
           required-package-name-prefix: ${{ inputs.container-required-package-name-prefix }}
           required-script-name: ${{ inputs.container-required-script-name }}
           required-target: export

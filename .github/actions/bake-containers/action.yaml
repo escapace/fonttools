@@ -64,7 +64,14 @@ outputs:
 runs:
   steps:
     - env:
+        BUILD_ARGS: ${{ inputs.build-args }}
+        CACHE_IGNORE_ERROR: ${{ inputs.cache-ignore-error }}
+        CACHE_MODE: ${{ inputs.cache-mode }}
+        CACHE_SCOPE: ${{ inputs.cache-scope }}
+        CONTAINERS: ${{ inputs.containers }}
+        EXPORT_DIRECTORY: ${{ inputs.export-directory }}
         GITHUB_TOKEN: ${{ github.token }}
+        PLATFORMS_INPUT: ${{ inputs.platforms }}
       id: plan
       name: plan baked container build
       uses: actions/github-script@v9
@@ -74,7 +81,19 @@ runs:
           const os = require('node:os')
           const path = require('node:path')
 
-          const containers = JSON.parse(core.getInput('containers', { required: true }))
+          const parseBooleanEnv = (value, name) => {
+            if (value === 'true' || value === 'True' || value === 'TRUE') {
+              return true
+            }
+
+            if (value === 'false' || value === 'False' || value === 'FALSE') {
+              return false
+            }
+
+            throw new Error(`Expected ${name} to use YAML 1.2 boolean syntax, received: ${value}`)
+          }
+          const splitMultilineEnv = (value) => (value ?? '').split(/\r?\n/).filter((line) => line !== '')
+          const containers = JSON.parse(process.env.CONTAINERS)
 
           if (!Array.isArray(containers)) {
             throw new Error('Expected containers input to be a JSON array.')
@@ -86,7 +105,7 @@ runs:
             throw new Error('Expected GITHUB_WORKSPACE to be set.')
           }
 
-          const exportDirectoryInput = core.getInput('export-directory').trim()
+          const exportDirectoryInput = (process.env.EXPORT_DIRECTORY ?? '').trim()
           const exportDirectory = (() => {
             if (exportDirectoryInput.length === 0) {
               return ''
@@ -105,22 +124,21 @@ runs:
 
             return resolvedExportDirectory
           })()
-          const cacheScope = core.getInput('cache-scope').trim()
-          const cacheMode = core.getInput('cache-mode').trim()
-          const cacheIgnoreError = core.getBooleanInput('cache-ignore-error')
+          const cacheScope = (process.env.CACHE_SCOPE ?? '').trim()
+          const cacheMode = (process.env.CACHE_MODE ?? '').trim()
+          const cacheIgnoreError = parseBooleanEnv(process.env.CACHE_IGNORE_ERROR, 'cache-ignore-error')
           const githubToken = process.env.GITHUB_TOKEN ?? ''
           const architectureByProcessArch = {
             arm64: 'arm64',
             x64: 'amd64',
           }
           const supportedPlatforms = new Set(['linux/amd64', 'linux/arm64'])
-          const requestedPlatforms = core
-            .getMultilineInput('platforms')
+          const requestedPlatforms = splitMultilineEnv(process.env.PLATFORMS_INPUT)
             .flatMap((platform) => platform.split(','))
             .map((platform) => platform.trim())
             .filter((platform, index, all) => platform.length > 0 && all.indexOf(platform) === index)
 
-          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
+          const buildArgLines = splitMultilineEnv(process.env.BUILD_ARGS)
           const nativeArchitecture = architectureByProcessArch[process.arch]
 
           if (cacheMode !== 'min' && cacheMode !== 'max') {
@@ -285,6 +303,9 @@ runs:
       uses: escapace/action-dockerfile-tools@v0.2.1
 
     - env:
+        BUILD_ARGS: ${{ inputs.build-args }}
+        CACHE_KEY: ${{ inputs.cache-key }}
+        CACHE_SCOPE: ${{ inputs.cache-scope }}
         PLAN_FILE: ${{ steps.plan.outputs.plan-file }}
         PLATFORMS: ${{ steps.plan.outputs.platforms }}
       id: cache-plan
@@ -300,6 +321,7 @@ runs:
 
           const sha256 = (value) => createHash('sha256').update(value).digest('hex')
           const sha256Json = (value) => sha256(JSON.stringify(value))
+          const splitMultilineEnv = (value) => (value ?? '').split(/\r?\n/).filter((line) => line !== '')
           const architectureByProcessArch = {
             arm64: 'arm64',
             x64: 'amd64',
@@ -435,9 +457,9 @@ runs:
           const buildPlatform = parsePlatform(`linux/${nativeArchitecture}`)
           const targetPlatforms = platforms.map(parsePlatform)
           const containers = JSON.parse(fs.readFileSync(planFile, 'utf8'))
-          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
-          const cacheScope = core.getInput('cache-scope').trim()
-          const callerCacheKey = core.getInput('cache-key')
+          const buildArgLines = splitMultilineEnv(process.env.BUILD_ARGS)
+          const cacheScope = (process.env.CACHE_SCOPE ?? '').trim()
+          const callerCacheKey = process.env.CACHE_KEY ?? ''
           const dockerfiles = [...new Set(containers.map((container) => container.dockerfile))].sort()
           const canonicalBuildArgs = parseCanonicalBuildArgs(buildArgLines)
           const dockerfileToolArgLines = canonicalBuildArgs.map(([key, value]) => `${key}=${value}`)
