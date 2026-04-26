@@ -64,7 +64,14 @@ outputs:
 runs:
   steps:
     - env:
+        BUILD_ARGS: ${{ inputs.build-args }}
+        CACHE_IGNORE_ERROR: ${{ inputs.cache-ignore-error }}
+        CACHE_MODE: ${{ inputs.cache-mode }}
+        CACHE_SCOPE: ${{ inputs.cache-scope }}
+        CONTAINERS: ${{ inputs.containers }}
+        EXPORT_DIRECTORY: ${{ inputs.export-directory }}
         GITHUB_TOKEN: ${{ github.token }}
+        PLATFORMS_INPUT: ${{ inputs.platforms }}
       id: plan
       name: plan baked container build
       uses: actions/github-script@v9
@@ -74,7 +81,19 @@ runs:
           const os = require('node:os')
           const path = require('node:path')
 
-          const containers = JSON.parse(core.getInput('containers', { required: true }))
+          const parseBooleanEnv = (value, name) => {
+            if (value === 'true' || value === 'True' || value === 'TRUE') {
+              return true
+            }
+
+            if (value === 'false' || value === 'False' || value === 'FALSE') {
+              return false
+            }
+
+            throw new Error(`Expected ${name} to use YAML 1.2 boolean syntax, received: ${value}`)
+          }
+          const splitMultilineEnv = (value) => (value ?? '').split(/\r?\n/).filter((line) => line !== '')
+          const containers = JSON.parse(process.env.CONTAINERS)
 
           if (!Array.isArray(containers)) {
             throw new Error('Expected containers input to be a JSON array.')
@@ -86,7 +105,7 @@ runs:
             throw new Error('Expected GITHUB_WORKSPACE to be set.')
           }
 
-          const exportDirectoryInput = core.getInput('export-directory').trim()
+          const exportDirectoryInput = (process.env.EXPORT_DIRECTORY ?? '').trim()
           const exportDirectory = (() => {
             if (exportDirectoryInput.length === 0) {
               return ''
@@ -105,22 +124,21 @@ runs:
 
             return resolvedExportDirectory
           })()
-          const cacheScope = core.getInput('cache-scope').trim()
-          const cacheMode = core.getInput('cache-mode').trim()
-          const cacheIgnoreError = core.getBooleanInput('cache-ignore-error')
+          const cacheScope = (process.env.CACHE_SCOPE ?? '').trim()
+          const cacheMode = (process.env.CACHE_MODE ?? '').trim()
+          const cacheIgnoreError = parseBooleanEnv(process.env.CACHE_IGNORE_ERROR, 'cache-ignore-error')
           const githubToken = process.env.GITHUB_TOKEN ?? ''
           const architectureByProcessArch = {
             arm64: 'arm64',
             x64: 'amd64',
           }
           const supportedPlatforms = new Set(['linux/amd64', 'linux/arm64'])
-          const requestedPlatforms = core
-            .getMultilineInput('platforms')
+          const requestedPlatforms = splitMultilineEnv(process.env.PLATFORMS_INPUT)
             .flatMap((platform) => platform.split(','))
             .map((platform) => platform.trim())
             .filter((platform, index, all) => platform.length > 0 && all.indexOf(platform) === index)
 
-          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
+          const buildArgLines = splitMultilineEnv(process.env.BUILD_ARGS)
           const nativeArchitecture = architectureByProcessArch[process.arch]
 
           if (cacheMode !== 'min' && cacheMode !== 'max') {
@@ -285,6 +303,9 @@ runs:
       uses: escapace/action-dockerfile-tools@v0.2.1
 
     - env:
+        BUILD_ARGS: ${{ inputs.build-args }}
+        CACHE_KEY: ${{ inputs.cache-key }}
+        CACHE_SCOPE: ${{ inputs.cache-scope }}
         PLAN_FILE: ${{ steps.plan.outputs.plan-file }}
         PLATFORMS: ${{ steps.plan.outputs.platforms }}
       id: cache-plan
@@ -296,10 +317,12 @@ runs:
           const { createHash } = require('node:crypto')
           const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
+          const os = require('node:os')
           const path = require('node:path')
 
           const sha256 = (value) => createHash('sha256').update(value).digest('hex')
           const sha256Json = (value) => sha256(JSON.stringify(value))
+          const splitMultilineEnv = (value) => (value ?? '').split(/\r?\n/).filter((line) => line !== '')
           const architectureByProcessArch = {
             arm64: 'arm64',
             x64: 'amd64',
@@ -340,8 +363,8 @@ runs:
 
             return [...buildArgs.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
           }
-          const discoverNormalizedCacheMap = (dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms) => {
-            const mergedCacheMap = {}
+          const discoverLogicalCacheMap = (dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms) => {
+            const logicalCacheMap = {}
 
             for (const dockerfile of dockerfiles) {
               for (const targetPlatform of targetPlatforms) {
@@ -373,32 +396,38 @@ runs:
                   throw new Error(`Expected dockerfile-tools list-cache-mounts to return a JSON object for ${dockerfile}`)
                 }
 
-                for (const [sourcePath, cacheOptions] of Object.entries(cacheMap)) {
+                for (const [logicalSourcePath, cacheOptions] of Object.entries(cacheMap)) {
                   if (cacheOptions === null || typeof cacheOptions !== 'object' || Array.isArray(cacheOptions)) {
-                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to be a JSON object.`)
+                    throw new Error(`Expected cache mount ${logicalSourcePath} from ${dockerfile} to be a JSON object.`)
                   }
 
                   const { type: _type, ...normalizedCacheOptions } = cacheOptions
 
                   if (typeof normalizedCacheOptions.target !== 'string' || normalizedCacheOptions.target.length === 0) {
-                    throw new Error(`Expected cache mount ${sourcePath} from ${dockerfile} to include a target.`)
+                    throw new Error(`Expected cache mount ${logicalSourcePath} from ${dockerfile} to include a target.`)
                   }
 
-                  mergedCacheMap[sourcePath] = normalizedCacheOptions
+                  logicalCacheMap[logicalSourcePath] = normalizedCacheOptions
                 }
               }
             }
 
-            return mergedCacheMap
+            return logicalCacheMap
           }
-          const toCanonicalCompatibilityBindings = (cacheScope, mergedCacheMap) => ({
+          const toPhysicalCacheMap = (logicalCacheMap, cacheRoot) => Object.fromEntries(
+            Object.entries(logicalCacheMap).map(([logicalSourcePath, cacheOptions]) => [
+              path.join(cacheRoot, logicalSourcePath),
+              cacheOptions,
+            ]),
+          )
+          const toCanonicalCompatibilityBindings = (cacheScope, logicalCacheMap) => ({
             'cache-scope': cacheScope,
-            bindings: Object.entries(mergedCacheMap)
-              .map(([sourcePath, cacheOptions]) => {
+            bindings: Object.entries(logicalCacheMap)
+              .map(([logicalSourcePath, cacheOptions]) => {
                 if (typeof cacheOptions === 'string') {
                   return {
                     effectiveIdentity: cacheOptions,
-                    sourcePath,
+                    sourcePath: logicalSourcePath,
                   }
                 }
 
@@ -407,12 +436,12 @@ runs:
                   : cacheOptions.target
 
                 if (typeof effectiveIdentity !== 'string' || effectiveIdentity.length === 0) {
-                  throw new Error(`Expected cache mount ${sourcePath} to include an id or target.`)
+                  throw new Error(`Expected cache mount ${logicalSourcePath} to include an id or target.`)
                 }
 
                 return {
                   effectiveIdentity,
-                  sourcePath,
+                  sourcePath: logicalSourcePath,
                 }
               })
               .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath) || left.effectiveIdentity.localeCompare(right.effectiveIdentity)),
@@ -435,14 +464,14 @@ runs:
           const buildPlatform = parsePlatform(`linux/${nativeArchitecture}`)
           const targetPlatforms = platforms.map(parsePlatform)
           const containers = JSON.parse(fs.readFileSync(planFile, 'utf8'))
-          const buildArgLines = core.getMultilineInput('build-args', { trimWhitespace: false })
-          const cacheScope = core.getInput('cache-scope').trim()
-          const callerCacheKey = core.getInput('cache-key')
+          const buildArgLines = splitMultilineEnv(process.env.BUILD_ARGS)
+          const cacheScope = (process.env.CACHE_SCOPE ?? '').trim()
+          const callerCacheKey = process.env.CACHE_KEY ?? ''
           const dockerfiles = [...new Set(containers.map((container) => container.dockerfile))].sort()
           const canonicalBuildArgs = parseCanonicalBuildArgs(buildArgLines)
           const dockerfileToolArgLines = canonicalBuildArgs.map(([key, value]) => `${key}=${value}`)
-          const mergedCacheMap = discoverNormalizedCacheMap(dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms)
-          const canonicalCompatibilityBindings = toCanonicalCompatibilityBindings(cacheScope, mergedCacheMap)
+          const logicalCacheMap = discoverLogicalCacheMap(dockerfiles, dockerfileToolArgLines, buildPlatform, targetPlatforms)
+          const canonicalCompatibilityBindings = toCanonicalCompatibilityBindings(cacheScope, logicalCacheMap)
           const canonicalTargetSelections = toCanonicalTargetSelections(containers)
           const dockerfileHashes = dockerfiles.map((dockerfile) => ({
             contentHash: sha256(fs.readFileSync(path.resolve(dockerfile))),
@@ -455,14 +484,31 @@ runs:
             buildArgs: canonicalBuildArgs,
             dockerfiles: dockerfileHashes,
           })
-          const cachePaths = Object.keys(mergedCacheMap).sort()
+          const runnerTempDirectory = process.env.RUNNER_TEMP ?? os.tmpdir()
+          const cacheRoot = path.join(
+            runnerTempDirectory,
+            'bake-containers-cache',
+            compatibilityHash,
+            targetHash,
+            callerCacheKeyHash,
+          )
+          const physicalCacheMap = toPhysicalCacheMap(logicalCacheMap, cacheRoot)
+          const cachePaths = Object.keys(physicalCacheMap).sort()
+          const scratchDirectory = path.join(
+            runnerTempDirectory,
+            'bake-containers-scratch',
+            compatibilityHash,
+            targetHash,
+            callerCacheKeyHash,
+          )
 
           core.setOutput('caller-cache-key-hash', callerCacheKeyHash)
-          core.setOutput('cache-map', JSON.stringify(mergedCacheMap))
+          core.setOutput('cache-map', JSON.stringify(physicalCacheMap))
           core.setOutput('cache-path', cachePaths.join('\n'))
           core.setOutput('compatibility-hash', compatibilityHash)
           core.setOutput('freshness-hash', freshnessHash)
           core.setOutput('has-cache-paths', cachePaths.length > 0 ? 'true' : 'false')
+          core.setOutput('scratch-dir', scratchDirectory)
           core.setOutput('target-hash', targetHash)
 
     - id: cache
@@ -484,6 +530,7 @@ runs:
       with:
         builder: ${{ steps.buildx.outputs.name }}
         cache-map: ${{ steps.cache-plan.outputs.cache-map }}
+        scratch-dir: ${{ steps.cache-plan.outputs.scratch-dir }}
         skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
     - id: bake
