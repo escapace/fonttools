@@ -12,7 +12,7 @@
       "mainFields": ["module", "browser", "main"],
       "outdir": "lib/browser",
       "platform": "browser",
-      "target": ["chrome118", "firefox119", "edge118", "opera126", "safari17"]
+      "target": ["chrome119", "firefox120", "edge119", "opera126", "safari17"]
     },
     "node": {
       "define": {

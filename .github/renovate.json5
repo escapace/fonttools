@@ -1,15 +1,27 @@
 {
-  enabledManagers: ['npm', 'pep621'],
-  extends: ['github>escapace/renovate-configuration'],
+  extends: [
+    'github>escapace/renovate-configuration',
+  ],
+  enabledManagers: [
+    'npm',
+    'pep621',
+  ],
   packageRules: [
     {
       enabled: false,
-      matchManagers: ['pep621'],
+      matchManagers: [
+        'pep621',
+      ],
     },
     {
       enabled: true,
-      matchManagers: ['pep621'],
-      matchPackageNames: ['fonttools', 'unicodedata2'],
+      matchManagers: [
+        'pep621',
+      ],
+      matchPackageNames: [
+        'fonttools',
+        'unicodedata2',
+      ],
       rangeStrategy: 'pin',
     },
   ],
