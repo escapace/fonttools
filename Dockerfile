@@ -60,13 +60,14 @@ ENV PATH="/home/node/.local/bin:$PATH" PYTHONUNBUFFERED=1
 
 FROM package AS pyodide-toolchain
 ARG PYODIDE_BUILD_VERSION
+ENV PYODIDE_CROSS_BUILD_ENV_METADATA_URL="https://pyodide.github.io/pyodide/api/pyodide-cross-build-environments.json"
 
 RUN --mount=type=cache,target=/home/node/.cache/pip,uid=1000,gid=1000,id=pip,sharing=locked \
   python -m pip install --user "wheel<0.46" "pyodide-build==${PYODIDE_BUILD_VERSION}" pytest
 
-RUN pyodide config get python_version > /home/node/package/pyodide-python-version.txt && \
-  pyodide config get emscripten_version > /home/node/package/emscripten-version.txt && \
-  pyodide xbuildenv install
+RUN pyodide xbuildenv install "${PYODIDE_BUILD_VERSION}" && \
+  pyodide config get python_version > /home/node/package/pyodide-python-version.txt && \
+  pyodide config get emscripten_version > /home/node/package/emscripten-version.txt
 
 ENV PYODIDE_ROOT="/home/node/package/.pyodide-xbuildenv-${PYODIDE_BUILD_VERSION}/${PYODIDE_BUILD_VERSION}/xbuildenv/pyodide-root"
 
