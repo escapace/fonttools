@@ -3,7 +3,7 @@ name = "escapace-fonttools"
 version = "0.0.0"
 # https://github.com/fonttools/fonttools/blob/4.62.1/requirements.txt
 dependencies = [
-  "unicodedata2==17.0.0",
+  "unicodedata2==17.0.1",
   "Brotli==1.2.0",
   "fonttools==4.62.1",
   "lxml==6.0.2",
