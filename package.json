@@ -9,8 +9,8 @@
   "bugs": "https://github.com/escapace/fonttools/issues",
   "devDependencies": {
     "@ast-grep/napi": "0.43.0",
-    "@commitlint/cli": "20.5.3",
-    "@commitlint/config-conventional": "20.5.3",
+    "@commitlint/cli": "21.0.2",
+    "@commitlint/config-conventional": "21.0.2",
     "@escapace/fonttools": "link:",
     "@escapace/pnpm-pack": "0.9.1",
     "@escapace/syncpack-configuration": "0.3.0",
