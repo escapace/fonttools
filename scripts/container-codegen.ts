@@ -5,7 +5,7 @@ import {
   VersionOperator,
   type ProjectNameRequirement,
 } from 'pip-requirements-js'
-import { minVersion } from 'semver'
+import { compare, minVersion, parse } from 'semver'
 import { parse as parseToml } from 'smol-toml'
 
 interface PackageJson {
@@ -27,6 +27,14 @@ interface PyodideModule {
 
 interface PyodidePackageJson {
   version: string
+}
+
+interface PyPiProject {
+  releases?: Record<string, PyPiReleaseFile[]>
+}
+
+interface PyPiReleaseFile {
+  yanked?: boolean
 }
 
 interface RuntimeVersions {
@@ -63,6 +71,7 @@ interface Versions {
   lxml: string
   node: string
   pyodide: string
+  pyodideBuild: string
   python: string
   uharfbuzz: string
   unicodedata2: string
@@ -80,6 +89,7 @@ const PYODIDE_PACKAGE_JSON_PATH = path.join(
   'package.json',
 )
 const PYODIDE_RUNTIME_DIRECTORY = path.join(ROOT_DIRECTORY, 'node_modules', 'pyodide')
+const PYODIDE_BUILD_PYPI_URL = 'https://pypi.org/pypi/pyodide-build/json'
 const PYPROJECT_TOML_PATH = path.join(ROOT_DIRECTORY, 'pyproject.toml')
 const UV_LOCK_PATH = path.join(ROOT_DIRECTORY, 'uv.lock')
 
@@ -155,6 +165,50 @@ async function readPinnedDependencyVersions(): Promise<Pick<Versions, Dependency
   }
 }
 
+function hasInstallablePyPiFile(releaseFiles: PyPiReleaseFile[]): boolean {
+  return releaseFiles.some((releaseFile) => releaseFile.yanked !== true)
+}
+
+async function readPyodideBuildVersion(pyodideVersion: string): Promise<string> {
+  const pyodideSemver = parse(pyodideVersion)
+
+  if (pyodideSemver === null) {
+    throw new Error(`Could not parse Pyodide version as semver: ${pyodideVersion}`)
+  }
+
+  const response = await fetch(PYODIDE_BUILD_PYPI_URL)
+
+  if (!response.ok) {
+    throw new Error(
+      `Could not fetch pyodide-build releases from ${PYODIDE_BUILD_PYPI_URL}: ${response.status} ${response.statusText}`,
+    )
+  }
+
+  const pyPiProject = (await response.json()) as PyPiProject
+  const installableVersions = Object.entries(pyPiProject.releases ?? {})
+    .filter(([, releaseFiles]) => hasInstallablePyPiFile(releaseFiles))
+    .flatMap(([version]) => {
+      const semver = parse(version)
+
+      return semver === null ? [] : [{ semver, version }]
+    })
+    .filter(({ semver }) => semver.major === pyodideSemver.major)
+    .filter(({ semver }) => semver.minor === pyodideSemver.minor)
+    .filter(({ semver }) => compare(semver, pyodideSemver) <= 0)
+    .map(({ version }) => version)
+    .sort(compare)
+
+  const pyodideBuildVersion = installableVersions.at(-1)
+
+  if (pyodideBuildVersion === undefined) {
+    throw new Error(
+      `Could not find an installable pyodide-build release for Pyodide ${pyodideVersion}`,
+    )
+  }
+
+  return pyodideBuildVersion
+}
+
 async function getVersions(
   packageJson: PackageJson,
   pyodidePackageJson: PyodidePackageJson,
@@ -190,6 +244,7 @@ json.dumps({
     ...pinnedDependencyVersions,
     node: extractMinimumNodeVersion(packageJson.devEngines.runtime.version),
     pyodide: pyodidePackageJson.version,
+    pyodideBuild: await readPyodideBuildVersion(pyodidePackageJson.version),
     python: runtimeVersions.pythonVersion,
   }
 }
@@ -244,7 +299,8 @@ async function updateDockerfile(
 
   dockerfile = replaceDockerfileArgument(dockerfile, 'NODE_VERSION', versions.node)
   dockerfile = replaceDockerfileArgument(dockerfile, 'PYODIDE_NPM_VERSION', versions.pyodide)
-  dockerfile = replaceDockerfileArgument(dockerfile, 'PYODIDE_BUILD_VERSION', versions.pyodide)
+  dockerfile = replaceDockerfileArgument(dockerfile, 'PYODIDE_BUILD_VERSION', versions.pyodideBuild)
+  dockerfile = replaceDockerfileArgument(dockerfile, 'PYODIDE_XBUILDENV_VERSION', versions.pyodide)
   dockerfile = replaceDockerfileArgument(dockerfile, 'FONTTOOLS_VERSION', versions.fonttools)
   dockerfile = replaceDockerfileArgument(
     dockerfile,
