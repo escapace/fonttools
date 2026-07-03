@@ -1,12 +1,13 @@
 ARG NODE_VERSION=24.15.0
-ARG PYODIDE_NPM_VERSION=0.29.3
+ARG PYODIDE_NPM_VERSION=0.29.4
 ARG PYODIDE_BUILD_VERSION=0.29.3
+ARG PYODIDE_XBUILDENV_VERSION=0.29.4
 ARG FONTTOOLS_VERSION=4.62.1
 ARG PYTHON_VERSION_TAG=313
 ARG UHARFBUZZ_REF=v0.52.0
 ARG UHARFBUZZ_VERSION=0.52.0
-ARG UNICODEDATA2_SOURCE_URL=https://files.pythonhosted.org/packages/a8/cc/2c74acf574a46b00cb3868059d295ac258f5c48929e2bfb5086454abe7bc/unicodedata2-17.0.0.tar.gz
-ARG UNICODEDATA2_SOURCE_SHA256=ffa2f0d6834642fe996d356e728da887201533bb540974ae7ac975e66ecc0e3a
+ARG UNICODEDATA2_SOURCE_URL=https://files.pythonhosted.org/packages/44/cb/520721a715da85530e21c71953b9b9a85a44e0d80d3b34bf9303c422d208/unicodedata2-17.0.1.tar.gz
+ARG UNICODEDATA2_SOURCE_SHA256=d79943d153f5f6bfbe3f55a5ec611985184bda37fcedb3ecc75322d82ae6ad3b
 
 FROM python:3.13-bookworm AS base
 ARG NODE_VERSION
@@ -60,16 +61,44 @@ ENV PATH="/home/node/.local/bin:$PATH" PYTHONUNBUFFERED=1
 
 FROM package AS pyodide-toolchain
 ARG PYODIDE_BUILD_VERSION
-ENV PYODIDE_CROSS_BUILD_ENV_METADATA_URL="https://pyodide.github.io/pyodide/api/pyodide-cross-build-environments.json"
+ARG PYODIDE_XBUILDENV_VERSION
+ENV PYODIDE_CROSS_BUILD_ENV_METADATA_URL="https://pyodide.github.io/pyodide/api/pyodide-cross-build-environments.json" \
+  PYODIDE_ROOT="/home/node/package/.pyodide-xbuildenv/xbuildenv/xbuildenv/pyodide-root" \
+  PYODIDE_XBUILDENV_PATH="/home/node/package/.pyodide-xbuildenv"
 
 RUN --mount=type=cache,target=/home/node/.cache/pip,uid=1000,gid=1000,id=pip,sharing=locked \
   python -m pip install --user "wheel<0.46" "pyodide-build==${PYODIDE_BUILD_VERSION}" pytest
 
-RUN pyodide xbuildenv install "${PYODIDE_BUILD_VERSION}" && \
+# Installing by verified URL avoids pyodide-build regenerating a package index from
+# cross-build environment lock files whose schema may differ from the toolchain package.
+RUN python - <<'PY' && \
+  pyodide xbuildenv install --path "${PYODIDE_XBUILDENV_PATH}" --url "file:///tmp/pyodide-xbuildenv-${PYODIDE_XBUILDENV_VERSION}.tar.bz2" && \
   pyodide config get python_version > /home/node/package/pyodide-python-version.txt && \
-  pyodide config get emscripten_version > /home/node/package/emscripten-version.txt
+  pyodide config get emscripten_version > /home/node/package/emscripten-version.txt && \
+  rm "/tmp/pyodide-xbuildenv-${PYODIDE_XBUILDENV_VERSION}.tar.bz2"
+import hashlib
+import json
+import os
+import urllib.request
 
-ENV PYODIDE_ROOT="/home/node/package/.pyodide-xbuildenv-${PYODIDE_BUILD_VERSION}/${PYODIDE_BUILD_VERSION}/xbuildenv/pyodide-root"
+version = os.environ['PYODIDE_XBUILDENV_VERSION']
+archive_path = f'/tmp/pyodide-xbuildenv-{version}.tar.bz2'
+with urllib.request.urlopen(os.environ['PYODIDE_CROSS_BUILD_ENV_METADATA_URL']) as response:
+    release = json.load(response)['releases'].get(version)
+
+if release is None:
+    raise SystemExit(f'Could not find Pyodide cross-build environment {version}')
+
+with urllib.request.urlopen(release['url']) as response:
+    archive = response.read()
+
+actual_sha256 = hashlib.sha256(archive).hexdigest()
+if actual_sha256 != release['sha256']:
+    raise SystemExit(f'Expected sha256 {release["sha256"]}, got {actual_sha256}')
+
+with open(archive_path, 'wb') as archive_file:
+    archive_file.write(archive)
+PY
 
 RUN --mount=type=cache,target=/home/node/.cache/emsdk-downloads,uid=1000,gid=1000,id=emsdk-downloads,sharing=locked \
   EMSDK_VERSION=$(cat /home/node/package/emscripten-version.txt) && \
