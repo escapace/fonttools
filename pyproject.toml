@@ -4,7 +4,7 @@ version = "0.0.0"
 # https://github.com/fonttools/fonttools/blob/4.62.1/requirements.txt
 dependencies = [
   "unicodedata2==17.0.1",
-  "Brotli==1.2.0",
+  "Brotli==1.2.1",
   "fonttools==4.62.1",
   "lxml==6.0.2",
   "uharfbuzz==0.52.0",
